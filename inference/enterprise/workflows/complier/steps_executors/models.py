@@ -58,6 +58,8 @@ from inference.enterprise.workflows.complier.utils import construct_step_selecto
 from inference.enterprise.workflows.entities.steps import (
     GPT_4V_MODEL_TYPE,
     LMM,
+    LLM,
+    LLMConfig,
     BarcodeDetector,
     ClassificationModel,
     ClipComparison,
@@ -881,6 +883,99 @@ ROBOFLOW_MODEL2HOSTED_ENDPOINT = {
     "YoloWorld": HOSTED_CORE_MODEL_URL,
     "YoloWorldModel": HOSTED_CORE_MODEL_URL,
 }
+
+
+async def run_llm_step(
+    step: LLM,
+    runtime_parameters: Dict[str, Any],
+    outputs_lookup: OutputsLookup,
+) -> Tuple[NextStepReference, OutputsLookup]:
+    resolve_parameter_closure = partial(
+        resolve_parameter,
+        runtime_parameters=runtime_parameters,
+        outputs_lookup=outputs_lookup,
+    )
+    prompt = resolve_parameter_closure(step.prompt)
+    remote_api_key = resolve_parameter_closure(step.remote_api_key)
+    # json_output = resolve_parameter_closure(step.json_output)
+    # if json_output is not None:
+    #     prompt = (
+    #         f"{prompt}\n\nVALID response format is JSON:\n"
+    #         f"{json.dumps(json_output, indent=4)}"
+    #     )
+    raw_output, structured_output = await remote_api_key(
+        prompt=prompt,
+        remote_api_key=remote_api_key,
+        llm_config=step.llm_config,
+        # expected_output=json_output,
+    )
+    serialised_result = [
+        {
+            "raw_output": raw["content"],
+            "structured_output": structured,
+            **structured,
+        }
+        for raw, structured in zip(raw_output, structured_output)
+    ]
+    serialised_result = attach_parent_info(
+        results=serialised_result,
+        nested_key=None,
+    )
+    outputs_lookup[construct_step_selector(step_name=step.name)] = serialised_result
+    return None, outputs_lookup
+
+async def run_gpt_text_prompting(
+    prompt: str,
+    remote_api_key: Optional[str],
+    llm_config: LLMConfig,
+    expected_output: Optional[Dict[str, str]],
+) -> Dict[str, str]:
+    """Query the NON-vision OpenAI models (GPT-3, GPT-4)."""
+    if remote_api_key is None:
+        raise ExecutionGraphError(
+            f"Step that involves GPT prompting requires OpenAI API key which was not provided."
+        )
+    result = await execute_gpt_text_request(
+        remote_api_key=remote_api_key,
+        prompt=prompt,
+        llm_config=llm_config,
+    )
+    # TODO: this was returning empty dicts as second param
+    if expected_output is None:
+        return result
+
+    parsed_output = [
+        try_parse_lmm_output_to_json(
+            output=r["content"], expected_output=expected_output
+        )
+        for r in result
+    ]
+    return results, parsed_output
+
+async def execute_gpt_text_request(
+    remote_api_key: str,
+    prompt: str,
+    llm_config: LLMConfig,
+) -> Dict[str, str]:
+    """Query the non-visual OpenAI models (e.g. GPT-3, GPT-4)."""
+    client = AsyncOpenAI(api_key=remote_api_key)
+    response = await client.chat.completions.create(
+        model=llm_config.gpt_model_version,
+        messages=[
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+        max_tokens=llm_config.max_tokens,
+    )
+
+    response_text = response.choices[0].message.content
+    if response_text is None:
+        response_text = ""
+
+    return { "content": response.choices[0].message.content }
+
 
 
 async def run_lmm_step(

@@ -1932,6 +1932,167 @@ class YoloWorldModel(BaseModel, StepInterface):
         return self.type
 
 
+GPT_3_MODEL_TYPE = "gpt-3.5-turbo"
+GPT_4_MODEL_TYPE = "gpt-4"
+SUPPORTED_LLMS = { GPT_3_MODEL_TYPE, GPT_4_MODEL_TYPE}
+
+
+class LLMConfig(BaseModel):
+    max_tokens: int = Field(default=450)
+    gpt_model_version: str = Field(default=GPT_4_MODEL_TYPE)
+
+
+class LLM(BaseModel, StepInterface):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "block_type": "model",
+            "description": "Run a large language model (LLM). LLMs can understand and write text. If you want to analyse images, you need an LMM block.",
+            "docs": "https://inference.roboflow.com/workflows/use_llm",
+        }
+    )
+    type: Literal["LLM"]
+    name: str = Field(description="Unique name of step in workflows")
+    prompt: Union[InferenceParameterSelector(kind=[STRING_KIND]), str] = Field(
+        description="The prompt for the AI Model",
+        examples=["What's there to see in New York?", "$inputs.prompt"],
+    )
+    llm_type: Union[
+        InferenceParameterSelector(kind=[STRING_KIND]), Literal["gpt_3", "gpt_4"]
+    ] = Field(
+        description="Type of LLM to be used", examples=["gpt_4", "$inputs.llm_type"]
+    )
+    llm_config: LLMConfig = Field(
+        default_factory=lambda: LLMConfig(), description="Configuration of LLM"
+    )
+    remote_api_key: Union[
+        InferenceParameterSelector(kind=[STRING_KIND]), Optional[str]
+    ] = Field(
+        default=None,
+        description="Holds API key required to call LLM model. Currently, only OpenAI is supported.",
+        examples=["sk-proj-123456890...", "$inputs.api_key"],
+    )
+
+    # Not sure if needed.
+    # json_output: Optional[
+    #     Union[InferenceParameterSelector(kind=[DICTIONARY_KIND]), Dict[str, str]]
+    # ] = Field(
+    #     default=None,
+    #     description="Holds dictionary that maps name of requested output field into its description",
+    #     examples=[{"count": "number of cats in the picture"}, "$inputs.json_output"],
+    # )
+
+    @classmethod
+    def describe_outputs(cls) -> List[OutputDefinition]:
+        return super(LLM, cls).describe_outputs() + [
+            OutputDefinition(name="parent_id", kind=[PARENT_ID_KIND]),
+            OutputDefinition(name="structured_output", kind=[DICTIONARY_KIND]),
+            OutputDefinition(name="raw_output", kind=[STRING_KIND]),
+            OutputDefinition(name="*", kind=[WILDCARD_KIND]),
+        ]
+
+    # @field_validator("json_output")
+    # @classmethod
+    # def validate_json_output(cls, value: Any) -> str:
+    #     validate_field_is_selector_or_has_given_type(
+    #         value=value, field_name="json_output", allowed_types=[type(None), dict]
+    #     )
+    #     if not issubclass(type(value), dict):
+    #         return value
+    #     validate_field_is_dict_of_strings(
+    #         value=value,
+    #         field_name="json_output",
+    #     )
+    #     output_names = {"raw_output", "structured_output", "parent_id"}
+    #     for key in value.keys():
+    #         if key in output_names:
+    #             raise ValueError(
+    #                 f"`json_output` specified for `LLM` step defines field (`{key}`) that collide with step "
+    #                 f"output names: {output_names} which is forbidden."
+    #             )
+    #     return value
+
+    def get_input_names(self) -> Set[str]:
+        return {
+            "prompt",
+            "llm_type",
+            "remote_api_key",
+            # "json_output",
+        }
+
+    def get_output_names(self) -> Set[str]:
+        outputs = {"raw_output", "structured_output", "parent_id"}
+        # if issubclass(type(self.json_output), dict):
+            # outputs.update(self.json_output.keys())
+        return outputs
+
+    def validate_field_selector(
+        self, field_name: str, input_step: GraphNone, index: Optional[int] = None
+    ) -> None:
+        selector = getattr(self, field_name)
+        if not is_selector(selector_or_value=selector):
+            raise ExecutionGraphError(
+                f"Attempted to validate selector value for field {field_name}, but field is not selector."
+            )
+        validate_selector_is_inference_parameter(
+            step_type=self.type,
+            field_name=field_name,
+            input_step=input_step,
+            applicable_fields={
+                "prompt",
+                "llm_type",
+                "remote_api_key",
+                # "json_output",
+            },
+        )
+
+    def validate_field_binding(self, field_name: str, value: Any) -> None:
+        if field_name == "prompt":
+            validate_field_has_given_type(
+                field_name=field_name,
+                allowed_types=[str],
+                value=value,
+                error=VariableTypeError,
+            )
+        elif field_name == "llm_type":
+            validate_field_is_one_of_selected_values(
+                field_name=field_name,
+                selected_values=SUPPORTED_LLMS,
+                value=value,
+                error=VariableTypeError,
+            )
+        elif field_name == "remote_api_key":
+            validate_field_has_given_type(
+                field_name=field_name,
+                allowed_types=[str, type(None)],
+                value=value,
+                error=VariableTypeError,
+            )
+        # elif field_name == "json_output":
+        #     validate_field_has_given_type(
+        #         field_name=field_name,
+        #         allowed_types=[type(None), dict],
+        #         value=value,
+        #         error=VariableTypeError,
+        #     )
+        #     if value is None:
+        #         return None
+        #     validate_field_is_dict_of_strings(
+        #         value=value,
+        #         field_name="json_output",
+        #         error=VariableTypeError,
+        #     )
+        #     output_names = {"raw_output", "structured_output", "parent_id"}
+        #     for key in value.keys():
+        #         if key in output_names:
+        #             raise VariableTypeError(
+        #                 f"`json_output` injected for `LLM` step {self.name} defines field (`{key}`) that collide "
+        #                 f"with step output names: {output_names} which is forbidden."
+        #             )
+
+    def get_type(self) -> str:
+        return self.type
+
+
 GPT_4V_MODEL_TYPE = "gpt_4v"
 COG_VLM_MODEL_TYPE = "cog_vlm"
 SUPPORTED_LMMS = {GPT_4V_MODEL_TYPE, COG_VLM_MODEL_TYPE}
